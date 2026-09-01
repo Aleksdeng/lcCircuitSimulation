@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LC Circuit</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#f8f9fb;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;color:#222;height:100vh;display:flex;flex-direction:column;overflow:hidden}
+#topbar{display:flex;align-items:baseline;justify-content:space-between;padding:8px 20px;background:#fff;border-bottom:1px solid #e2e4e8}
+#topbar h1{font-size:.95rem;font-weight:600}
+#topbar .info{font-size:.75rem;color:#777}
+#topbar .info span{font-family:Consolas,Menlo,monospace;color:#333;margin-left:4px}
+#state{display:flex;gap:22px;padding:4px 20px;background:#fff;border-bottom:1px solid #eef0f3;font-family:Consolas,Menlo,monospace;font-size:.75rem}
+#state b{color:#222;margin-left:2px}
+#state .kv{color:#888}
+canvas{display:block;flex:1;min-height:0;background:#fafbfc}
+#ctrls{display:flex;align-items:center;gap:12px;padding:6px 20px;background:#fff;border-top:1px solid #e2e4e8;flex-wrap:wrap}
+button{border:1px solid #ccc;border-radius:3px;background:#fff;padding:3px 12px;cursor:pointer;font-size:.78rem;font-family:inherit;color:#333}
+button:hover{background:#f0f2f5}
+#ctrls label{font-size:.75rem;color:#666;display:flex;align-items:center;gap:3px;white-space:nowrap}
+#ctrls input[type=text]{width:54px;padding:2px 4px;border:1px solid #d0d4d8;border-radius:2px;font-family:Consolas,Menlo,monospace;font-size:.72rem;text-align:right;color:#222}
+#ctrls input[type=text]:focus{outline:none;border-color:#5588cc}
+#circuit-overlay,#explain-overlay{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.55);z-index:100;align-items:center;justify-content:center;cursor:pointer}
+#circuit-overlay img{max-width:90%;max-height:85%;border-radius:4px;box-shadow:0 2px 16px rgba(0,0,0,.3);pointer-events:none}
+#explain-box{background:#fff;padding:24px 32px;border-radius:6px;max-width:440px;max-height:80vh;overflow-y:auto;font-size:.82rem;line-height:1.6;color:#333;font-family:sans-serif}
+</style>
+</head>
+<body>
+<div id="topbar">
+<h1>LC Circuit Oscillation</h1>
+<button id="circuit-btn" onclick="toggleCircuit()">Show Circuit</button>
+<button id="explain-btn" onclick="toggleExplanation()">Show Explanation</button>
+<div class="info">ω₀ = <span id="w0-d">2.00</span> rad/s &nbsp; T = <span id="T-d">3.14</span> s &nbsp; <span id="g-row" style="display:none">γ = <span id="g-d">0</span> s⁻¹</span></div>
+</div>
+<div id="state">
+<span class="kv">t  <b id="st">0.00</b> s</span>
+<span class="kv">Q  <b id="sQ">+1.00</b> C</span>
+<span class="kv">I  <b id="sI">0.00</b> A</span>
+<span class="kv">U_E<b id="sUE">0.50</b> J</span>
+<span class="kv">U_B<b id="sUB">0.00</b> J</span>
+<span class="kv">U  <b id="sU">0.50</b> J</span>
+</div>
+<canvas id="c"></canvas>
+<div id="circuit-overlay" style="display:none" onclick="toggleCircuit()"><img src="lc-circuit.png"></div>
+<div id="explain-overlay" style="display:none" onclick="toggleExplanation()"><div id="explain-box">L: Inductance (H)<br>C: Capacitance (F)<br>R: Resistance (Ω)<br>Q₀: Initial charge (C)<br>T: Time window (s)<br>×: Speed multiplier<br><br>t: Time (s)<br>Q: Charge (C)<br>I: Current (A)<br>U_E: Electric energy (J)<br>U_B: Magnetic energy (J)<br>U: Total energy (J)</div></div>
+<div id="ctrls">
+<button id="pause-btn" onclick="togglePause()">Pause</button>
+<button onclick="t=0">Reset</button>
+<label>L <input type="text" id="inL" value="0.50" onchange="applyParams()"> H</label>
+<label>C <input type="text" id="inC" value="0.50" onchange="applyParams()"> F</label>
+<label>R <input type="text" id="inR" value="0.00" onchange="applyParams()"> Ω</label>
+<label>Q₀ <input type="text" id="inQ0" value="1.00" onchange="applyParams()"> C</label>
+<label>T <input type="text" id="inTmax" value="25.0" onchange="applyParams()"> s</label>
+<label>×<input type="text" id="inSpeed" value="1.0" onchange="applyParams()"></label>
+</div>
+<script>
+var cv = document.getElementById('c');
+var ct = cv.getContext('2d');
+
+var L = 0.5;
+var C = 0.5;
+var R = 0;
+var Q0 = 1;
+var tMax = 25;
+var spd = 1;
+
+var w0 = 0;
+var gamma = 0;
+var w = 0;
+var under = true;
+
+var t = 0;
+var playing = true;
+var lastT = 0;
+var W = 0;
+var H = 0;
+var pts = [];
+var qRng = 1;
+var iRng = 1;
+var eMax = 1;
+
+// Read a number from an input; use a default if it is not a number.
+function readNum(id, def) {
+  var v = parseFloat(document.getElementById(id).value);
+  if (!isFinite(v)) v = def;
+  document.getElementById(id).value = v;
+  return v;
+}
+
+// Same as readNum, but the value must be greater than 0.
+function readPositive(id, def) {
+  var v = parseFloat(document.getElementById(id).value);
+  if (!isFinite(v) || v <= 0) v = def;
+  document.getElementById(id).value = v;
+  return v;
+}
+
+// Analytical solutions for Q(t) and I(t), starting from Q(0)=Q0, I(0)=0.
+function stateAt(tv) {
+  if (R < 1e-9) {
+    var q = Q0 * Math.cos(w0 * tv);
+    var i = -Q0 * w0 * Math.sin(w0 * tv);
+    return [q, i];
+  }
+  if (under) {
+    var q = Q0 * Math.exp(-gamma * tv) * (Math.cos(w * tv) + (gamma / w) * Math.sin(w * tv));
+    var i = -Q0 * (w0 * w0 / w) * Math.exp(-gamma * tv) * Math.sin(w * tv);
+    return [q, i];
+  }
+  var beta = Math.sqrt(gamma * gamma - w0 * w0);
+  if (!(beta > 1e-9)) {
+    var q = Q0 * Math.exp(-gamma * tv) * (1 + gamma * tv);
+    var i = -Q0 * gamma * gamma * tv * Math.exp(-gamma * tv);
+    return [q, i];
+  }
+  var q = Q0 * Math.exp(-gamma * tv) * (Math.cosh(beta * tv) + (gamma / beta) * Math.sinh(beta * tv));
+  var i = -Q0 * (w0 * w0 / beta) * Math.exp(-gamma * tv) * Math.sinh(beta * tv);
+  return [q, i];
+}
+
+// Build the curve points once, after the parameters change.
+function buildPts() {
+  pts = [];
+  var qMax = Math.abs(Q0);
+  var iMax = 0;
+  var energyMax = 0;
+  for (var i = 0; i <= 500; i++) {
+    var tv = (i / 500) * tMax;
+    var st = stateAt(tv);
+    var ue = st[0] * st[0] / (2 * C);
+    var ub = 0.5 * L * st[1] * st[1];
+    pts.push({ t: tv, Q: st[0], I: st[1], UE: ue, UB: ub });
+    if (Math.abs(st[0]) > qMax) qMax = Math.abs(st[0]);
+    if (Math.abs(st[1]) > iMax) iMax = Math.abs(st[1]);
+    if (ue + ub > energyMax) energyMax = ue + ub;
+  }
+  qRng = Math.max(qMax * 1.1, 0.02);
+  iRng = Math.max(iMax * 1.1, 0.02);
+  eMax = Math.max(energyMax * 1.1, 0.02);
+}
+
+function applyParams() {
+  L = readPositive('inL', 0.5);
+  C = readPositive('inC', 0.5);
+  R = readNum('inR', 0);
+  if (R < 0) {
+    R = 0;
+    document.getElementById('inR').value = 0;
+  }
+  Q0 = readNum('inQ0', 1);
+  tMax = readPositive('inTmax', 25);
+  spd = readPositive('inSpeed', 1);
+
+  w0 = 1 / Math.sqrt(L * C);
+  gamma = R / (2 * L);
+  var d = w0 * w0 - gamma * gamma;
+  under = d > 0;
+  w = under ? Math.sqrt(d) : 0;
+  t = 0;
+  buildPts();
+}
+
+function togglePause() {
+  playing = !playing;
+  document.getElementById('pause-btn').textContent = playing ? 'Pause' : 'Play';
+}
+
+function toggleCircuit() {
+  var ov = document.getElementById('circuit-overlay');
+  var btn = document.getElementById('circuit-btn');
+  if (ov.style.display === 'none') {
+    ov.style.display = 'flex';
+    btn.textContent = 'Hide Circuit';
+  } else {
+    ov.style.display = 'none';
+    btn.textContent = 'Show Circuit';
+  }
+}
+
+function toggleExplanation() {
+  var ov = document.getElementById('explain-overlay');
+  var btn = document.getElementById('explain-btn');
+  if (ov.style.display === 'none') {
+    ov.style.display = 'flex';
+    btn.textContent = 'Hide Explanation';
+  } else {
+    ov.style.display = 'none';
+    btn.textContent = 'Show Explanation';
+  }
+}
+
+function size() {
+  var r = cv.getBoundingClientRect();
+  W = r.width;
+  H = r.height;
+  cv.width = W;
+  cv.height = H;
+}
+
+function draw() {
+  ct.fillStyle = '#fafbfc';
+  ct.fillRect(0, 0, W, H);
+
+  var ML = 62;
+  var MR = 18;
+  var gw = W - ML - MR;
+  var gh = H - 4;
+  var qH = gh * 0.30;
+  var iH = gh * 0.30;
+  var bH = gh * 0.40;
+
+  var panelQ = { x: ML, y: 2, w: gw, h: qH };
+  var panelI = { x: ML, y: 2 + qH, w: gw, h: iH };
+  var panelE = { x: ML, y: 2 + qH + iH, w: gw, h: bH };
+
+  function xPos(tv) { return ML + (tv / tMax) * gw; }
+
+  function drawGrid(p, yMin, yMax) {
+    var span = yMax - yMin;
+    var step = span / 5;
+    ct.strokeStyle = '#e6e8ec';
+    ct.lineWidth = 0.6;
+    for (var v = Math.ceil(yMin / step) * step; v <= yMax; v += step) {
+      var py = p.y + p.h - ((v - yMin) / span) * p.h;
+      ct.beginPath();
+      ct.moveTo(p.x, py);
+      ct.lineTo(p.x + p.w, py);
+      ct.stroke();
+    }
+    ct.strokeStyle = '#bbb';
+    ct.lineWidth = 1;
+    ct.strokeRect(p.x, p.y, p.w, p.h);
+    ct.fillStyle = '#666';
+    ct.font = '10px Consolas,Menlo,monospace';
+    ct.textAlign = 'right';
+    for (var v = Math.ceil(yMin / step) * step; v <= yMax; v += step) {
+      var py = p.y + p.h - ((v - yMin) / span) * p.h;
+      ct.fillText(v.toFixed(1), p.x - 6, py + 4);
+    }
+  }
+
+  function drawLine(p, prop, lo, hi, color, width) {
+    ct.strokeStyle = color;
+    ct.lineWidth = width;
+    ct.beginPath();
+    for (var i = 0; i < pts.length; i++) {
+      var sx = xPos(pts[i].t);
+      var sy = p.y + p.h - ((pts[i][prop] - lo) / (hi - lo)) * p.h;
+      if (i === 0) ct.moveTo(sx, sy);
+      else ct.lineTo(sx, sy);
+    }
+    ct.stroke();
+  }
+
+  drawGrid(panelQ, -qRng, qRng);
+  ct.fillStyle = '#333';
+  ct.font = 'bold 10.5px sans-serif';
+  ct.textAlign = 'left';
+  ct.fillText('Q(t)', panelQ.x + 6, panelQ.y + 15);
+  ct.fillStyle = '#999';
+  ct.fillText('C', panelQ.x + 40, panelQ.y + 15);
+  drawLine(panelQ, 'Q', -qRng, qRng, '#d97706', 1.6);
+
+  drawGrid(panelI, -iRng, iRng);
+  ct.fillStyle = '#333';
+  ct.font = 'bold 10.5px sans-serif';
+  ct.textAlign = 'left';
+  ct.fillText('I(t)', panelI.x + 6, panelI.y + 15);
+  ct.fillStyle = '#999';
+  ct.fillText('A', panelI.x + 32, panelI.y + 15);
+  drawLine(panelI, 'I', -iRng, iRng, '#2563eb', 1.6);
+
+  drawGrid(panelE, 0, eMax);
+  ct.fillStyle = '#333';
+  ct.font = 'bold 10.5px sans-serif';
+  ct.textAlign = 'left';
+  ct.fillText('Energy', panelE.x + 6, panelE.y + 15);
+  ct.fillStyle = '#999';
+  ct.fillText('J', panelE.x + 52, panelE.y + 15);
+  drawLine(panelE, 'UE', 0, eMax, '#dc2626', 1.4);
+  drawLine(panelE, 'UB', 0, eMax, '#2563eb', 1.4);
+
+  var lgX = panelE.x + panelE.w - 60;
+  var lgY = panelE.y + 14;
+  ct.fillStyle = '#dc2626';
+  ct.fillRect(lgX, lgY - 5, 14, 2.5);
+  ct.fillStyle = '#2563eb';
+  ct.fillRect(lgX, lgY + 1, 14, 2.5);
+  ct.fillStyle = '#666';
+  ct.font = '9px sans-serif';
+  ct.textAlign = 'left';
+  ct.fillText('U_E', lgX + 18, lgY + 1);
+  ct.fillText('U_B', lgX + 18, lgY + 7);
+
+  var cx = xPos(t);
+  var sc = stateAt(t);
+  var ue = sc[0] * sc[0] / (2 * C);
+  var ub = 0.5 * L * sc[1] * sc[1];
+
+  ct.strokeStyle = 'rgba(0,0,0,0.30)';
+  ct.lineWidth = 1;
+  ct.setLineDash([4, 3]);
+  var panels = [panelQ, panelI, panelE];
+  for (var k = 0; k < panels.length; k++) {
+    ct.beginPath();
+    ct.moveTo(cx, panels[k].y);
+    ct.lineTo(cx, panels[k].y + panels[k].h);
+    ct.stroke();
+  }
+  ct.setLineDash([]);
+
+  var dotData = [
+    { p: panelQ, val: sc[0], lo: -qRng, hi: qRng, cl: '#d97706' },
+    { p: panelI, val: sc[1], lo: -iRng, hi: iRng, cl: '#2563eb' },
+    { p: panelE, val: ue, lo: 0, hi: eMax, cl: '#dc2626' },
+    { p: panelE, val: ub, lo: 0, hi: eMax, cl: '#2563eb' }
+  ];
+  for (var d = 0; d < dotData.length; d++) {
+    var dd = dotData[d];
+    var dy = dd.p.y + dd.p.h - ((dd.val - dd.lo) / (dd.hi - dd.lo)) * dd.p.h;
+    ct.fillStyle = dd.cl;
+    ct.beginPath();
+    ct.arc(cx, dy, 3.5, 0, 2 * Math.PI);
+    ct.fill();
+    ct.strokeStyle = '#fff';
+    ct.lineWidth = 1.5;
+    ct.beginPath();
+    ct.arc(cx, dy, 3.5, 0, 2 * Math.PI);
+    ct.stroke();
+  }
+
+  var tStep = tMax / 5;
+  ct.fillStyle = '#666';
+  ct.font = '9px Consolas,Menlo,monospace';
+  ct.textAlign = 'center';
+  for (var v = 0; v <= tMax; v += tStep) {
+    ct.fillText(v.toFixed(1) + 's', xPos(v), H - 6);
+  }
+  ct.fillStyle = '#888';
+  ct.font = '9px sans-serif';
+  ct.fillText('t (s)', ML + gw / 2, H - 14);
+
+  document.getElementById('st').textContent = t.toFixed(2);
+  document.getElementById('sQ').textContent = (sc[0] >= 0 ? '+' : '') + sc[0].toFixed(3);
+  document.getElementById('sI').textContent = (sc[1] >= 0 ? '+' : '') + sc[1].toFixed(3);
+  document.getElementById('sUE').textContent = ue.toFixed(3);
+  document.getElementById('sUB').textContent = ub.toFixed(3);
+  document.getElementById('sU').textContent = (ue + ub).toFixed(3);
+  document.getElementById('w0-d').textContent = w0.toFixed(2);
+  document.getElementById('T-d').textContent = (2 * Math.PI / w0).toFixed(2);
+  var gr = document.getElementById('g-row');
+  if (R > 1e-6) {
+    gr.style.display = '';
+    document.getElementById('g-d').textContent = gamma.toFixed(3);
+  } else {
+    gr.style.display = 'none';
+  }
+}
+
+function loop(ts) {
+  if (lastT) {
+    var dt = Math.min((ts - lastT) / 1000, 0.05);
+    if (playing) {
+      t = t + dt * spd;
+      if (t > tMax) t = 0;
+    }
+  }
+  lastT = ts;
+  draw();
+  requestAnimationFrame(loop);
+}
+
+applyParams();
+size();
+window.onresize = size;
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
